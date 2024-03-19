@@ -1,0 +1,21 @@
+{
+    "name": "device-timer-service",
+    "version": "1.0.0",
+    "description": "",
+    "author": "",
+    "license": "ISC",
+    "type": "module",
+    "scripts": {
+        "build": "tsc --project tsconfig.json --sourceMap",
+        "build:watch": "tsc --project tsconfig.json --sourceMap --watch",
+        "tsc": "tsc"
+    },
+    "devDependencies": {
+        "@types/node": "20.11.5",
+        "@types/ws": "8.5.10",
+        "typescript": "5.4.2"
+    },
+    "dependencies": {
+        "ws": "8.16.0"
+    }
+}
