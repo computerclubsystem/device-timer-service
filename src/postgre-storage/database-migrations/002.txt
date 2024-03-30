@@ -1,0 +1,19 @@
+CREATE TABLE "user"
+(
+    id SERIAL PRIMARY KEY NOT NULL,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL
+);
+
+CREATE TABLE certificate
+(
+    id SERIAL PRIMARY KEY NOT NULL,
+    thumbprint TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL,
+    public_key TEXT NOT NULL,
+    private_key TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL
+);
+
+UPDATE db_metadata SET value='2' WHERE name='database-version';

@@ -1,0 +1,49 @@
+CREATE TABLE db_metadata
+(
+    id SERIAL PRIMARY KEY NOT NULL,
+    name TEXT UNIQUE NOT NULL,
+    value TEXT NULL
+);
+
+CREATE TABLE device_group
+(
+    id SERIAL PRIMARY KEY NOT NULL,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NULL,
+    enabled BOOLEAN NOT NULL
+);
+
+CREATE TABLE device
+(
+    id SERIAL PRIMARY KEY NOT NULL,
+    certificate_thumbprint TEXT UNIQUE NOT NULL,
+    certificate_subject TEXT NOT NULL,
+    certificate_issuer TEXT NOT NULL,
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    approved BOOLEAN NOT NULL,
+    enabled BOOLEAN NOT NULL,
+    device_group_id INTEGER NULL,
+    CONSTRAINT fk_device_device_group_id_device_group_id FOREIGN KEY (device_group_id) REFERENCES device_group(id) 
+);
+
+CREATE TABLE device_state_log
+(
+    id SERIAL PRIMARY KEY NOT NULL,
+    device_id INTEGER NOT NULL,
+    device_time TIMESTAMP WITHOUT TIME ZONE NULL,
+    cpu_temperature REAL NULL,
+    cpu_usage REAL NULL,
+    storage_free_space BIGINT NULL,
+    input1_value BOOLEAN NULL,
+    input2_value BOOLEAN NULL,
+    input3_value BOOLEAN NULL,
+    output1_value BOOLEAN NULL,
+    output2_value BOOLEAN NULL,
+    output3_value BOOLEAN NULL,
+    last_time_added_at TIMESTAMP WITHOUT TIME ZONE NULL,
+    remaining_seconds INTEGER NULL,
+    received_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    CONSTRAINT fk_device_state_log_device_id_device_id FOREIGN KEY (device_id) REFERENCES device(id) 
+);
+
+INSERT INTO db_metadata (name, value) VALUES ('database-version', '1');
