@@ -9,7 +9,7 @@ import { StorageProviderInitResult } from 'src/storage/storage-provider-init-res
 import { Logger } from '../logger.mjs';
 import { Metadata } from 'src/storage/entties/metadata.mjs';
 import { DeviceStateLog } from 'src/storage/entties/device-state-log.mjs';
-import { Device } from 'src/storage/entties/device.mjs';
+import { IDevice } from 'src/storage/entties/device.mjs';
 
 export class PostgreStorageProvider implements StorageProvider {
     private state: PostgreStorageProviderState;
@@ -37,29 +37,48 @@ export class PostgreStorageProvider implements StorageProvider {
         return result;
     }
 
-    async saveDevice(device: Device): Promise<Device | undefined> {
+    async saveDevice(device: IDevice): Promise<IDevice | undefined> {
         const query = `
         INSERT INTO device
         (
-            certificate_thumbprint, certificate_subject, certificate_issuer, created_at, approved, enabled, device_group_id
+            certificate_thumbprint,
+            created_at,
+            approved,
+            enabled,
+            device_group_id
         )
         VALUES
         (
-            $1, $2, $3, $4, $5, $6, $7
+            $1, $2, $3, $4, $5
         )
-        RETURNING id, certificate_thumbprint, certificate_subject, certificate_issuer, created_at, approved, enabled, device_group_id
+        RETURNING 
+            id,
+            certificate_thumbprint,
+            created_at,
+            approved,
+            enabled,
+            device_group_id
         `;
         const params: any[] = [
-            device.certificate_thumbprint, device.certificate_subject, device.certificate_issuer,
-            device.created_at, device.approved, device.enabled, device.device_group_id,
+            device.certificate_thumbprint,
+            device.created_at,
+            device.approved,
+            device.enabled,
+            device.device_group_id,
         ];
         const res = await this.execQuery(query, params);
         return res.rows[0];
     }
 
-    async getDeviceByCertificateThumbprint(certificateThumbprint: string): Promise<Device | undefined> {
+    async getDeviceByCertificateThumbprint(certificateThumbprint: string): Promise<IDevice | undefined> {
         const query = `
-        SELECT id, certificate_thumbprint, certificate_subject, created_at, approved, enabled, device_group_id
+        SELECT 
+            id,
+            certificate_thumbprint,
+            created_at,
+            approved,
+            enabled,
+            device_group_id
         FROM device
         WHERE certificate_thumbprint = $1
         LIMIT 1
@@ -75,40 +94,55 @@ export class PostgreStorageProvider implements StorageProvider {
         const query = `
         INSERT INTO device_state_log
         (
-            device_id, device_time, cpu_temperature, cpu_usage, storage_free_space,
-            input1_value, input2_value, input3_value,
-            output1_value, output2_value, output3_value,
+            device_id,
+            device_time,
+            cpu_temperature,
+            cpu_usage,
+            storage_free_space,
+            input1_value,
+            input2_value,
+            input3_value,
+            output1_value,
+            output2_value,
+            output3_value,
             received_at
         )
         VALUES ( 
             $1, $2, $3, $4, $5,
-            $6, $7, $8,
-            $9, $10, $11,
-            $12
+            $6, $7, $8, $9, $10,
+            $11, $12
         )
         `;
         // 3, '2024-03-24T01:02:03', 62.50, 8.13, 8427746352,
         // true, false, false,
         // false, true, true,
         // '2024-03-24T01:02:05'
-        const now = Date.now();
-        const device_id = 3;
-        const device_time = new Date(now - 2000).toISOString();
-        const cpu_temperature = 55 + Math.random() * 15;
-        const cpu_usage = 5 + Math.random() * 4;
-        const storage_free_space = 12_876_345_234 + Math.floor(Math.random() * 123_456_789);
-        const input1_value = Math.random() < 0.5;
-        const input2_value = Math.random() < 0.5;
-        const input3_value = Math.random() < 0.5;
-        const output1_value = Math.random() < 0.5;
-        const output2_value = Math.random() < 0.5;
-        const output3_value = Math.random() < 0.5;
-        const received_at = new Date(now).toISOString();
+        // const now = Date.now();
+        // const device_id = 3;
+        // const device_time = new Date(now - 2000).toISOString();
+        // const cpu_temperature = 55 + Math.random() * 15;
+        // const cpu_usage = 5 + Math.random() * 4;
+        // const storage_free_space = 12_876_345_234 + Math.floor(Math.random() * 123_456_789);
+        // const input1_value = Math.random() < 0.5;
+        // const input2_value = Math.random() < 0.5;
+        // const input3_value = Math.random() < 0.5;
+        // const output1_value = Math.random() < 0.5;
+        // const output2_value = Math.random() < 0.5;
+        // const output3_value = Math.random() < 0.5;
+        // const received_at = new Date(now).toISOString();
         const params: any[] = [
-            device_id, device_time, cpu_temperature, cpu_usage, storage_free_space,
-            input1_value, input2_value, input3_value,
-            output1_value, output2_value, output3_value,
-            received_at,
+            entity.device_id,
+            entity.device_time,
+            entity.cpu_temperature,
+            entity.cpu_usage,
+            entity.storage_free_space,
+            entity.input1_value,
+            entity.input2_value,
+            entity.input3_value,
+            entity.output1_value,
+            entity.output2_value,
+            entity.output3_value,
+            entity.received_at,
         ];
         const res = await this.execQuery(query, params);
     }

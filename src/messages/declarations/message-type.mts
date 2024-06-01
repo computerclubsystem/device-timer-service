@@ -3,5 +3,5 @@ export const enum OperatorMessageType {
 }
 
 export const enum DeviceMessageType {
-    deviceSetStatus = 'device-set-status',
+    deviceStatus = 'device-status',
 }

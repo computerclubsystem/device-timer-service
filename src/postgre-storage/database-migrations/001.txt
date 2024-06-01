@@ -17,8 +17,6 @@ CREATE TABLE device
 (
     id SERIAL PRIMARY KEY NOT NULL,
     certificate_thumbprint TEXT UNIQUE NOT NULL,
-    certificate_subject TEXT NOT NULL,
-    certificate_issuer TEXT NOT NULL,
     created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
     approved BOOLEAN NOT NULL,
     enabled BOOLEAN NOT NULL,

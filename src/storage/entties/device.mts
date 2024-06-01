@@ -1,8 +1,6 @@
-export interface Device {
+export interface IDevice {
     id: number;
     certificate_thumbprint: string;
-    certificate_subject: string;
-    certificate_issuer: string;
     created_at: string;
     approved: boolean;
     enabled: boolean;

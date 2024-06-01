@@ -15,7 +15,8 @@ import { PostgreStorageProvider } from './postgre-storage/postgre-storage-provid
 import { StorageProviderConfig } from './storage/storage-provider-config.mjs';
 import { StorageProvider } from './storage/storage-provider.mjs';
 import { DeviceStateLog } from './storage/entties/device-state-log.mjs';
-import { Device } from './storage/entties/device.mjs';
+import { IDevice } from './storage/entties/device.mjs';
+import { DeviceStatusDeviceMessage, DeviceStatusDeviceMessageBody } from './messages/device/device-status-device-message.mjs';
 
 export class DeviceTimerService {
     private devicesWssServer!: WssServer;
@@ -97,7 +98,7 @@ export class DeviceTimerService {
         const data: ConnectedDeviceData = {
             connectionId: args.connectionId,
             connectedAt: this.getNow(),
-            deviceId: null,
+            device: null,
             certificate: args.certificate,
             certificateThumbprint: certThumbprint ? this.getLowercasedCertificateThumbprint(certThumbprint) : '',
             ipAddress: args.ipAddress,
@@ -114,27 +115,26 @@ export class DeviceTimerService {
             return;
         }
         try {
-            // TODO: Also check if the certificate with this thumbprint is enabled
             let device = await this.storageProvider.getDeviceByCertificateThumbprint(data.certificateThumbprint);
             if (!device) {
                 // Create the device in non-approved state
                 device = {
                     approved: false,
-                    certificate_subject: JSON.stringify(data.certificate?.subject),
-                    certificate_issuer: JSON.stringify(data.certificate?.issuer),
                     certificate_thumbprint: data.certificateThumbprint,
                     created_at: this.getNowISO(),
                     enabled: false,
                     id: 0,
-                } as Device;
+                } as IDevice;
                 device = await this.storageProvider.saveDevice(device);
                 // Newly created devices must be approved before using them
                 return;
             } else {
                 // Check if device is approved and enabled
+                // TODO: Also check if the certificate with this thumbprint is enabled
                 if (device.approved && device.enabled) {
                     data.isAuthenticated = true;
-                    data.deviceId = '' + device.id;
+                    data.device = device;
+                    this.devicesWssServer.attachToConnection(args.connectionId);
                 }
             }
         } catch (err) {
@@ -266,6 +266,9 @@ export class DeviceTimerService {
             if (!type) {
                 return;
             }
+            if (type === DeviceMessageType.deviceStatus) {
+                this.processDeviceStatusDeviceMessage(msg!, clientData);
+            }
         } catch (err) {
             this.logger.warn(`Can't deserialize device message`, args, err);
             return;
@@ -279,6 +282,30 @@ export class DeviceTimerService {
         //         this.process...Message(msg, args.connectionId);
         //         break;
         // }
+    }
+
+    private async processDeviceStatusDeviceMessage(msg: DeviceStatusDeviceMessage, clientData: ConnectedDeviceData): Promise<void> {
+        try {
+            const body = msg.body;
+            const deviceStateLog: DeviceStateLog = {
+                device_id: clientData.device?.id!,
+                received_at: this.getNowISO(),
+                cpu_temperature: body.cpuTemp,
+                cpu_usage: body.cpuUsage,
+                device_time: body.currentTime,
+                input1_value: body.input1Value,
+                input2_value: body.input2Value,
+                input3_value: body.input3Value,
+                output1_value: body.output1Value,
+                output2_value: body.output2Value,
+                output3_value: body.output3Value,
+                remaining_seconds: body.remainingSeconds,
+                storage_free_space: body.storageFreeSpace,
+            };
+            await this.storageProvider.addDeviceStateLog(deviceStateLog);
+        } catch (err) {
+            this.logger.error('Error adding device status log', err);
+        }
     }
 
     private processOperatorMessageReceived(args: MessageReceivedEventArgs): void {
@@ -435,9 +462,13 @@ interface ConnectedWebSocketClientData {
 
 interface ConnectedDeviceData extends ConnectedWebSocketClientData {
     /**
-     * Device ID in the system
+     * 
      */
-    deviceId: string | null;
+    device?: IDevice | null;
+    // /**
+    //  * Device ID in the system
+    //  */
+    // deviceId: string | null;
     /**
      * The client certificate
      */
