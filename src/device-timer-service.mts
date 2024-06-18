@@ -1,5 +1,5 @@
-import EventEmitter from 'node:events';
 import * as fs from 'node:fs';
+import { DetailedPeerCertificate } from 'node:tls';
 
 import {
     ClientConnectedEventArgs, ConnectionClosedEventArgs, ConnectionErrorEventArgs,
@@ -16,10 +16,11 @@ import { StorageProvider } from './storage/storage-provider.mjs';
 import { DeviceStateLog } from './storage/entities/device-state-log.mjs';
 import { IDevice } from './storage/entities/device.mjs';
 import { DeviceStatusDeviceMessage, DeviceStatusDeviceMessageBody } from './messages/device/device-status-device-message.mjs';
-import { ConnectedDeviceData, ConnectedOperatorData, ConnectedWebSocketClientData, ConnectionCertificateData, ConnectionCleanUpReason } from './declarations.mjs';
+import { ConnectedDeviceData, ConnectedOperatorData, ConnectedWebSocketClientData, ConnectionCertificateData, ConnectionCleanUpReason, DeviceTimerServiceState } from './declarations.mjs';
 import { FileSystemHelper } from './file-system-helper.mjs';
+import { DeviceTimerServiceStateHelper } from './device-timer-service-state-helper.mjs';
 import { CryptoHelper } from './crypto-helper.mjs';
-import { DetailedPeerCertificate } from 'node:tls';
+import { SerializerHelper } from './serializer-helper.mjs';
 import { OperatorAuthRequestMessage } from './messages/operator/auth-request.mjs';
 import { OperatorMessageCreator } from './messages/operator/message-creator.mjs';
 
@@ -31,9 +32,11 @@ export class DeviceTimerService {
     private readonly className = (this as any).constructor.name;
     private readonly fileSystemHelper = new FileSystemHelper();
     private readonly cryptoHelper = new CryptoHelper();
+    private readonly stateHelper = new DeviceTimerServiceStateHelper();
+    private readonly serializerHelper = new SerializerHelper();
 
     async start(): Promise<boolean> {
-        this.state = this.createState();
+        this.state = this.stateHelper.createState();
         this.logger.setPrefix(this.className);
         const databaseInitialized = await this.initializeDatabase();
         if (!databaseInitialized) {
@@ -277,7 +280,7 @@ export class DeviceTimerService {
         let msg: DeviceMessage<any> | null;
         let type: DeviceMessageType | undefined;
         try {
-            msg = this.deserializeWebSocketBufferToDeviceMessage(args.buffer);
+            msg = this.serializerHelper.deserializeWebSocketBufferToDeviceMessage(args.buffer);
             this.logger.log('Received message from device', msg);
             type = msg?.header?.type;
             if (!type) {
@@ -334,7 +337,7 @@ export class DeviceTimerService {
         let msg: OperatorMessage<any> | null;
         let type: OperatorMessageType | undefined;
         try {
-            msg = this.deserializeWebSocketBufferToOperatorMessage(args.buffer);
+            msg = this.serializerHelper.deserializeWebSocketBufferToOperatorMessage(args.buffer);
             type = msg?.header?.type;
             this.logger.log('Received message from operator', type, msg);
             // Some of the messages does not require authentication, like the message for authentication
@@ -401,18 +404,6 @@ export class DeviceTimerService {
     async createOperatorAuthenticationToken(connectedOperatorData: ConnectedOperatorData): Promise<string> {
         this.state.operators.issuedTokensCount++;
         return Promise.resolve('' + this.state.operators.issuedTokensCount + '-' + this.cryptoHelper.createRandomHexString(20));
-    }
-
-    deserializeWebSocketBufferToDeviceMessage(buffer: Buffer): DeviceMessage<any> | null {
-        const text = buffer.toString();
-        const json = JSON.parse(text);
-        return json as DeviceMessage<any>;
-    }
-
-    deserializeWebSocketBufferToOperatorMessage(buffer: Buffer): OperatorMessage<any> | null {
-        const text = buffer.toString();
-        const json = JSON.parse(text);
-        return json as OperatorMessage<any>;
     }
 
     private startDeviceConnectionsMonitor(): void {
@@ -515,23 +506,6 @@ export class DeviceTimerService {
         this.state.operators.connectedOperatorsData.delete(connectionId);
     }
 
-    private createState(): DeviceTimerServiceState {
-        const state = {
-            devices: {
-                devicesWebSocketPort: 65445,
-                connectedDevicesData: new Map<number, ConnectedDeviceData>(),
-                deviceConnectionsMonitorInterval: 10000,
-            },
-            operators: {
-                operatorsWebSocketPort: 65446,
-                connectedOperatorsData: new Map<number, ConnectedOperatorData>(),
-                operatorConnectionsMonitorInterval: 10000,
-                issuedTokensCount: 0,
-            }
-        } as DeviceTimerServiceState;
-        return state;
-    }
-
     private createConnectionCertificateData(detailedPeerCertificate: DetailedPeerCertificate | null): ConnectionCertificateData {
         const certThumbprint = detailedPeerCertificate?.fingerprint;
         const certData: ConnectionCertificateData = {
@@ -540,27 +514,4 @@ export class DeviceTimerService {
         };
         return certData;
     }
-}
-
-interface DeviceTimerServiceState {
-    devices: DeviceTimerServiceDevicesWrapper;
-    operators: DeviceTimerServiceOperatorsWrapper;
-}
-
-interface DeviceTimerServiceDevicesWrapper {
-    devicesWssServer: WssServer;
-    devicesWssEmitter: EventEmitter;
-    devicesWebSocketPort: number;
-    connectedDevicesData: Map<number, ConnectedDeviceData>;
-    deviceConnectionsMonitorInterval: number;
-}
-
-interface DeviceTimerServiceOperatorsWrapper {
-    operatorsWssServer: WssServer;
-    operatorsWssEmitter: EventEmitter;
-    operatorsStaticFilesServer: StaticFilesServer;
-    operatorsWebSocketPort: number;
-    connectedOperatorsData: Map<number, ConnectedOperatorData>;
-    operatorConnectionsMonitorInterval: number;
-    issuedTokensCount: number;
 }
