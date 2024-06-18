@@ -1,5 +1,7 @@
 export const enum OperatorMessageType {
-    operatorAuthRequest = 'operator-auth-request',
+    authRequest = 'operator-auth-request',
+    authReply = 'operator-auth-reply',
+    serverInfoReply = 'operator-server-info-reply',
 }
 
 export const enum DeviceMessageType {

@@ -26,15 +26,21 @@ export class WssServer {
             rejectUnauthorized: false,
         });
         // this.httpsServer.listen(8899, '0.0.0.0');
-        // this.httpsServer.on('connection', aaa => {
-        //     console.log(aaa);
+        this.httpsServer.on('connection', aaa => {
+            console.log('connection', aaa);
+        });
+        this.httpsServer.on('secureConnection', aaa => {
+            console.log('secureConnection', aaa);
+        });
+        this.httpsServer.on('connect', (req, socket, ref) => {
+            console.log('connect', req, socket, ref);
+        });
+        // this.httpsServer.on('request', buff => {
+        //     console.log('request', buff);
         // });
-        // this.httpsServer.on('secureConnection', aaa => {
-        //     console.log(aaa);
-        // });
-        // this.httpsServer.on('connect', (req, socket, ref) => {
-        //     console.log(req, socket, ref);
-        // });
+        this.httpsServer.on('error', err => console.error('error', err));
+        this.httpsServer.on('tlsClientError', err => console.error('tlsClientError', err));
+        this.httpsServer.on('clientError', (err, socket) => console.error('clientError', err, socket));
         this.wsServer = new WebSocketServer({
             server: this.httpsServer,
             // host: '0.0.0.0',

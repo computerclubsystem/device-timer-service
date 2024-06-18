@@ -1,6 +1,5 @@
 import EventEmitter from 'node:events';
 import * as fs from 'node:fs';
-import { DetailedPeerCertificate } from 'node:tls';
 
 import {
     ClientConnectedEventArgs, ConnectionClosedEventArgs, ConnectionErrorEventArgs,
@@ -14,28 +13,27 @@ import { envVars } from './env-vars.mjs';
 import { PostgreStorageProvider } from './postgre-storage/postgre-storage-provider.mjs';
 import { StorageProviderConfig } from './storage/storage-provider-config.mjs';
 import { StorageProvider } from './storage/storage-provider.mjs';
-import { DeviceStateLog } from './storage/entties/device-state-log.mjs';
-import { IDevice } from './storage/entties/device.mjs';
+import { DeviceStateLog } from './storage/entities/device-state-log.mjs';
+import { IDevice } from './storage/entities/device.mjs';
 import { DeviceStatusDeviceMessage, DeviceStatusDeviceMessageBody } from './messages/device/device-status-device-message.mjs';
+import { ConnectedDeviceData, ConnectedOperatorData, ConnectedWebSocketClientData, ConnectionCertificateData, ConnectionCleanUpReason } from './declarations.mjs';
+import { FileSystemHelper } from './file-system-helper.mjs';
+import { CryptoHelper } from './crypto-helper.mjs';
+import { DetailedPeerCertificate } from 'node:tls';
+import { OperatorAuthRequestMessage } from './messages/operator/auth-request.mjs';
+import { OperatorMessageCreator } from './messages/operator/message-creator.mjs';
 
 export class DeviceTimerService {
-    private devicesWssServer!: WssServer;
-    private devicesWssEmitter!: EventEmitter;
-    private devicesWebSocketPort = 65445;
-    private connectedDevicesData = new Map<number, ConnectedDeviceData>();
-
-    private operatorsWssServer!: WssServer;
-    private operatorsWssEmitter!: EventEmitter;
-    private operatorsStaticFilesServer?: StaticFilesServer;
-    private operatorsWebSocketPort = 65446;
-    private connectedOperatorsData = new Map<number, ConnectedOperatorData>();
-
-
+    private state!: DeviceTimerServiceState;
+    private operatorMsgCreator = new OperatorMessageCreator();
     private storageProvider!: StorageProvider;
-    private logger = new Logger();
+    private readonly logger = new Logger();
     private readonly className = (this as any).constructor.name;
+    private readonly fileSystemHelper = new FileSystemHelper();
+    private readonly cryptoHelper = new CryptoHelper();
 
     async start(): Promise<boolean> {
+        this.state = this.createState();
         this.logger.setPrefix(this.className);
         const databaseInitialized = await this.initializeDatabase();
         if (!databaseInitialized) {
@@ -77,50 +75,59 @@ export class DeviceTimerService {
     }
 
     private startDevicesWebSocketServer(): void {
-        this.devicesWssServer = new WssServer();
+        const devicesState = this.state.devices;
+        devicesState.devicesWssServer = new WssServer();
         const wssServerConfig: WssServerConfig = {
-            cert: fs.readFileSync('./certificates/ccs3.device-timer-service.local.crt').toString(),
-            key: fs.readFileSync('./certificates/ccs3.device-timer-service.local.key').toString(),
-            port: this.devicesWebSocketPort,
+            // cert: fs.readFileSync('./certificates/ccs3.device-timer-service.local.crt').toString(),
+            // key: fs.readFileSync('./certificates/ccs3.device-timer-service.local.key').toString(),
+            cert: this.fileSystemHelper.getFileTextContent('./certificates/ccs3.device-timer-service.local.crt'),
+            key: this.fileSystemHelper.getFileTextContent('./certificates/ccs3.device-timer-service.local.key'),
+            port: devicesState.devicesWebSocketPort,
             sendText: true,
         };
-        this.devicesWssServer.start(wssServerConfig);
-        this.devicesWssEmitter = this.devicesWssServer.getEmitter();
-        this.devicesWssEmitter.on(WssServerEventName.clientConnected, args => this.processDeviceConnected(args));
-        this.devicesWssEmitter.on(WssServerEventName.connectionClosed, args => this.processDeviceConnectionClosed(args));
-        this.devicesWssEmitter.on(WssServerEventName.connectionError, args => this.processDeviceConnectionError(args));
-        this.devicesWssEmitter.on(WssServerEventName.messageReceived, args => this.processDeviceMessageReceived(args));
+        devicesState.devicesWssServer.start(wssServerConfig);
+        devicesState.devicesWssEmitter = devicesState.devicesWssServer.getEmitter();
+        devicesState.devicesWssEmitter.on(WssServerEventName.clientConnected, args => this.processDeviceConnected(args));
+        devicesState.devicesWssEmitter.on(WssServerEventName.connectionClosed, args => this.processDeviceConnectionClosed(args));
+        devicesState.devicesWssEmitter.on(WssServerEventName.connectionError, args => this.processDeviceConnectionError(args));
+        devicesState.devicesWssEmitter.on(WssServerEventName.messageReceived, args => this.processDeviceMessageReceived(args));
     }
 
     private async processDeviceConnected(args: ClientConnectedEventArgs): Promise<void> {
         this.logger.log('Device connected', args);
-        const certThumbprint = args.certificate?.fingerprint;
+        // const certThumbprint = args.certificate?.fingerprint;
+        // const certData: ConnectionCertificateData = {
+        //     certificateThumbprint: certThumbprint ? this.getLowercasedCertificateThumbprint(certThumbprint) : '',
+        //     certificate: args.certificate,
+        // };
         const data: ConnectedDeviceData = {
             connectionId: args.connectionId,
             connectedAt: this.getNow(),
             device: null,
-            certificate: args.certificate,
-            certificateThumbprint: certThumbprint ? this.getLowercasedCertificateThumbprint(certThumbprint) : '',
+            certificateData: this.createConnectionCertificateData(args.certificate),
+            // certificate: args.certificate,
+            // certificateThumbprint: certThumbprint ? this.getLowercasedCertificateThumbprint(certThumbprint) : '',
             ipAddress: args.ipAddress,
             lastMessageReceivedAt: null,
             receivedMessagesCount: 0,
             sentMessagesCount: 0,
             unknownMessagesReceived: 0,
+            unauthenticatedMessagesCount: 0,
             isAuthenticated: false,
         };
-        this.connectedDevicesData.set(args.connectionId, data);
+        this.state.devices.connectedDevicesData.set(args.connectionId, data);
         if (!args.ipAddress || !args.certificate?.fingerprint) {
             this.logger.warn('The device ip address is unknown or certificate is not provided');
             // TODO: Either disconnect the client or the connection will timeout and the monitoring will disconnect the client
             return;
         }
         try {
-            let device = await this.storageProvider.getDeviceByCertificateThumbprint(data.certificateThumbprint);
+            let device = await this.storageProvider.getDeviceByCertificateThumbprint(data.certificateData.certificateThumbprint);
             if (!device) {
                 // Create the device in non-approved state
                 device = {
                     approved: false,
-                    certificate_thumbprint: data.certificateThumbprint,
+                    certificate_thumbprint: data.certificateData.certificateThumbprint,
                     created_at: this.getNowISO(),
                     enabled: false,
                     id: 0,
@@ -134,15 +141,15 @@ export class DeviceTimerService {
                 if (device.approved && device.enabled) {
                     data.isAuthenticated = true;
                     data.device = device;
-                    this.devicesWssServer.attachToConnection(args.connectionId);
+                    this.state.devices.devicesWssServer.attachToConnection(args.connectionId);
                 }
             }
         } catch (err) {
-            this.logger.warn('Cannot get or save device with certificate thumbprint', data.certificateThumbprint, err);
+            this.logger.warn('Cannot get or save device with certificate thumbprint', data.certificateData.certificateThumbprint, err);
         }
         // TODO: Connect to the database and check if we have such certificate
         //       If there is such certificate, mark the device as connected
-        //       If there is no such certificate, send message back and close the con
+        //       If there is no such certificate, send message back and close the connection
         // const msg = createBusDeviceGetByCertificateRequestMessage();
         // const roundTripData: ConnectionRoundTripData = {
         //     connectionId: data.connectionId,
@@ -159,43 +166,53 @@ export class DeviceTimerService {
         const data: ConnectedOperatorData = {
             connectionId: args.connectionId,
             username: null,
+            certificateData: this.createConnectionCertificateData(args.certificate),
+            // certificate: args.certificate,
+            // certificateThumbprint: certThumbprint ? this.getLowercasedCertificateThumbprint(certThumbprint) : '',
             connectedAt: this.getNow(),
             ipAddress: args.ipAddress,
             lastMessageReceivedAt: null,
             receivedMessagesCount: 0,
             sentMessagesCount: 0,
             unknownMessagesReceived: 0,
+            unauthenticatedMessagesCount: 0,
             permissions: null,
+            token: null,
             isAuthenticated: false,
         };
-        this.connectedOperatorsData.set(args.connectionId, data);
+        this.state.operators.connectedOperatorsData.set(args.connectionId, data);
         if (!args.ipAddress) {
-            this.logger.warn('The operator ip address is unknown');
+            // The IP address can be undefined if the socket was closed
+            this.logger.warn('The operator ip address is not defined. Probably the connection was closed');
             // TODO: Either disconnect the client or the connection will timeout and the monitoring will disconnect the client
             return;
         }
-        this.operatorsWssServer.attachToConnection(data.connectionId);
-        this.sendJSONToOperatorConnection({ header: { type: 'server-info-reply' }, body: { version: '1.0.0' } }, data.connectionId);
+        this.state.operators.operatorsWssServer.attachToConnection(data.connectionId);
+        const serverInfoReplyMsg = this.operatorMsgCreator.createServerInfoReplyMessage();
+        serverInfoReplyMsg.body.version = '1.0.0';
+        this.sendJSONToOperatorConnection(serverInfoReplyMsg, data);
     }
 
-    private sendJSONToOperatorConnection(json: any, connectionId: number): void {
-        this.operatorsWssServer.sendJSON({ header: { type: 'server-info-reply' }, body: { version: '1.0.0' } }, connectionId);
+    private sendJSONToOperatorConnection(json: any, connectedOperatorData: ConnectedOperatorData): void {
+        connectedOperatorData.sentMessagesCount++;
+        this.state.operators.operatorsWssServer.sendJSON(json, connectedOperatorData.connectionId);
     }
 
     startOperatorsWebSocketServer(): void {
-        this.operatorsWssServer = new WssServer();
+        const operatorsState = this.state.operators;
+        operatorsState.operatorsWssServer = new WssServer();
         const wssServerConfig: WssServerConfig = {
             cert: fs.readFileSync('./certificates/ccs3.device-timer-service.local.crt').toString(),
             key: fs.readFileSync('./certificates/ccs3.device-timer-service.local.key').toString(),
-            port: this.operatorsWebSocketPort,
+            port: operatorsState.operatorsWebSocketPort,
             sendText: true,
         };
-        this.operatorsWssServer.start(wssServerConfig);
-        this.operatorsWssEmitter = this.operatorsWssServer.getEmitter();
-        this.operatorsWssEmitter.on(WssServerEventName.clientConnected, args => this.processOperatorConnected(args));
-        this.operatorsWssEmitter.on(WssServerEventName.connectionClosed, args => this.processOperatorConnectionClosed(args));
-        this.operatorsWssEmitter.on(WssServerEventName.connectionError, args => this.processOperatorConnectionError(args));
-        this.operatorsWssEmitter.on(WssServerEventName.messageReceived, args => this.processOperatorMessageReceived(args));
+        operatorsState.operatorsWssServer.start(wssServerConfig);
+        operatorsState.operatorsWssEmitter = operatorsState.operatorsWssServer.getEmitter();
+        operatorsState.operatorsWssEmitter.on(WssServerEventName.clientConnected, args => this.processOperatorConnected(args));
+        operatorsState.operatorsWssEmitter.on(WssServerEventName.connectionClosed, args => this.processOperatorConnectionClosed(args));
+        operatorsState.operatorsWssEmitter.on(WssServerEventName.connectionError, args => this.processOperatorConnectionError(args));
+        operatorsState.operatorsWssEmitter.on(WssServerEventName.messageReceived, args => this.processOperatorMessageReceived(args));
 
         const noStaticFilesServing = this.getEnvVarValue(envVars.CCS3_DEVICE_TIMER_SERVICE_NO_STATIC_FILES_SERVING);
         if (noStaticFilesServing !== 'true' && noStaticFilesServing !== '1') {
@@ -204,9 +221,9 @@ export class DeviceTimerService {
                 notFoundFile: './index.html',
                 path: staticFilesPath,
             } as IStaticFilesServerConfig;
-            this.operatorsStaticFilesServer = new StaticFilesServer(config, this.devicesWssServer.getHttpsServer());
-            this.operatorsStaticFilesServer.start();
-            const resolvedStaticFilesPath = this.operatorsStaticFilesServer.getResolvedPath();
+            operatorsState.operatorsStaticFilesServer = new StaticFilesServer(config, operatorsState.operatorsWssServer.getHttpsServer());
+            operatorsState.operatorsStaticFilesServer.start();
+            const resolvedStaticFilesPath = operatorsState.operatorsStaticFilesServer.getResolvedPath();
             const staticFilesPathExists = fs.existsSync(resolvedStaticFilesPath);
             if (staticFilesPathExists) {
                 this.logger.log('Serving static files from', resolvedStaticFilesPath);
@@ -310,17 +327,24 @@ export class DeviceTimerService {
 
     private processOperatorMessageReceived(args: MessageReceivedEventArgs): void {
         const clientData = this.getConnectedOperatorData(args.connectionId);
-        // TODO: Some of the messages does not require authentication, like the message for authentication
-        if (!clientData || !clientData.isAuthenticated) {
-            // return;
+        if (!clientData) {
+            return;
         }
+        clientData.receivedMessagesCount++;
         let msg: OperatorMessage<any> | null;
         let type: OperatorMessageType | undefined;
         try {
             msg = this.deserializeWebSocketBufferToOperatorMessage(args.buffer);
-            this.logger.log('Received message from operator', msg);
             type = msg?.header?.type;
-            if (!type) {
+            this.logger.log('Received message from operator', type, msg);
+            // Some of the messages does not require authentication, like the message for authentication
+            if (!this.isAllowedOperatorAnonymousMessage(type) && !clientData.isAuthenticated) {
+                // This message type does not allow anonymous processing and the client is not authenticated
+                clientData.unauthenticatedMessagesCount++;
+                this.logger.warn('Operator message type', type, 'is not allowed for non-authenticated connections');
+                return;
+            }
+            if (!msg || !type) {
                 return;
             }
         } catch (err) {
@@ -328,7 +352,14 @@ export class DeviceTimerService {
             return;
         }
 
+        clientData.lastMessageReceivedAt = this.getNow();
+
         switch (type) {
+            case OperatorMessageType.authRequest:
+                this.processOperatorAuthRequestMessage(msg, clientData);
+                break;
+            default:
+                clientData.unknownMessagesReceived++;
         }
 
         // switch (type) {
@@ -336,6 +367,40 @@ export class DeviceTimerService {
         //         this.process...Message(msg, args.connectionId);
         //         break;
         // }
+    }
+
+    isAllowedOperatorAnonymousMessage(messageType?: OperatorMessageType): boolean {
+        if (messageType === OperatorMessageType.authRequest) {
+            return true;
+        }
+        return false;
+    }
+
+    async processOperatorAuthRequestMessage(msg: OperatorAuthRequestMessage, connectedOperatorData: ConnectedOperatorData): Promise<void> {
+        try {
+            const user = await this.storageProvider.getUser(msg.body.username, msg.body.passwordHash);
+            const replyMsg = this.operatorMsgCreator.createOperatorAuthReplyMessage();
+            if (!user || !user.enabled) {
+                connectedOperatorData.isAuthenticated = false;
+                replyMsg.body.success = false;
+                this.sendJSONToOperatorConnection(replyMsg, connectedOperatorData);
+                return;
+            } else {
+                connectedOperatorData.username = user.username;
+                connectedOperatorData.isAuthenticated = true;
+                connectedOperatorData.token = await this.createOperatorAuthenticationToken(connectedOperatorData);
+                replyMsg.body.success = true;
+                replyMsg.body.token = connectedOperatorData.token;
+                this.sendJSONToOperatorConnection(replyMsg, connectedOperatorData);
+            }
+        } catch (err) {
+            this.logger.warn('Cannot get user', msg?.body?.username, err);
+        }
+    }
+
+    async createOperatorAuthenticationToken(connectedOperatorData: ConnectedOperatorData): Promise<string> {
+        this.state.operators.issuedTokensCount++;
+        return Promise.resolve('' + this.state.operators.issuedTokensCount + '-' + this.cryptoHelper.createRandomHexString(20));
     }
 
     deserializeWebSocketBufferToDeviceMessage(buffer: Buffer): DeviceMessage<any> | null {
@@ -351,7 +416,9 @@ export class DeviceTimerService {
     }
 
     private startDeviceConnectionsMonitor(): void {
-        setInterval(() => this.cleanUpWebSocketConnections(this.connectedDevicesData, this.devicesWssServer), 10000);
+        setInterval(() => this.cleanUpWebSocketConnections(
+            this.state.devices.connectedDevicesData, this.state.devices.devicesWssServer
+        ), this.state.devices.deviceConnectionsMonitorInterval);
     }
 
     // // TODO: Support generic clean up functions for both deviecs and operators
@@ -379,15 +446,15 @@ export class DeviceTimerService {
     // }
 
     private getConnectedDeviceData(connectionId: number): ConnectedDeviceData | undefined {
-        return this.connectedDevicesData.get(connectionId);
+        return this.state.devices.connectedDevicesData.get(connectionId);
     }
 
     private removeDeviceClient(connectionId: number): void {
-        this.connectedDevicesData.delete(connectionId);
+        this.state.devices.connectedDevicesData.delete(connectionId);
     }
 
     private startOperatorConnectionsMonitor(): void {
-        setInterval(() => this.cleanUpWebSocketConnections(this.connectedOperatorsData, this.operatorsWssServer), 10000);
+        setInterval(() => this.cleanUpWebSocketConnections(this.state.operators.connectedOperatorsData, this.state.operators.operatorsWssServer), 10000);
     }
 
     private cleanUpWebSocketConnections(
@@ -441,49 +508,59 @@ export class DeviceTimerService {
     // }
 
     private getConnectedOperatorData(connectionId: number): ConnectedOperatorData | undefined {
-        return this.connectedOperatorsData.get(connectionId);
+        return this.state.operators.connectedOperatorsData.get(connectionId);
     }
 
     private removeOperatorClient(connectionId: number): void {
-        this.connectedOperatorsData.delete(connectionId);
+        this.state.operators.connectedOperatorsData.delete(connectionId);
+    }
+
+    private createState(): DeviceTimerServiceState {
+        const state = {
+            devices: {
+                devicesWebSocketPort: 65445,
+                connectedDevicesData: new Map<number, ConnectedDeviceData>(),
+                deviceConnectionsMonitorInterval: 10000,
+            },
+            operators: {
+                operatorsWebSocketPort: 65446,
+                connectedOperatorsData: new Map<number, ConnectedOperatorData>(),
+                operatorConnectionsMonitorInterval: 10000,
+                issuedTokensCount: 0,
+            }
+        } as DeviceTimerServiceState;
+        return state;
+    }
+
+    private createConnectionCertificateData(detailedPeerCertificate: DetailedPeerCertificate | null): ConnectionCertificateData {
+        const certThumbprint = detailedPeerCertificate?.fingerprint;
+        const certData: ConnectionCertificateData = {
+            certificateThumbprint: certThumbprint ? this.getLowercasedCertificateThumbprint(certThumbprint) : '',
+            certificate: detailedPeerCertificate,
+        };
+        return certData;
     }
 }
 
-interface ConnectedWebSocketClientData {
-    connectionId: number;
-    connectedAt: number;
-    ipAddress: string | null;
-    lastMessageReceivedAt: number | null;
-    receivedMessagesCount: number;
-    sentMessagesCount: number;
-    unknownMessagesReceived: number;
-    isAuthenticated: boolean;
+interface DeviceTimerServiceState {
+    devices: DeviceTimerServiceDevicesWrapper;
+    operators: DeviceTimerServiceOperatorsWrapper;
 }
 
-interface ConnectedDeviceData extends ConnectedWebSocketClientData {
-    /**
-     * 
-     */
-    device?: IDevice | null;
-    // /**
-    //  * Device ID in the system
-    //  */
-    // deviceId: string | null;
-    /**
-     * The client certificate
-     */
-    certificate: DetailedPeerCertificate | null;
-    /**
-     * certificate.fingeprint without the colon separator and lowercased
-     */
-    certificateThumbprint: string;
+interface DeviceTimerServiceDevicesWrapper {
+    devicesWssServer: WssServer;
+    devicesWssEmitter: EventEmitter;
+    devicesWebSocketPort: number;
+    connectedDevicesData: Map<number, ConnectedDeviceData>;
+    deviceConnectionsMonitorInterval: number;
 }
 
-interface ConnectedOperatorData extends ConnectedWebSocketClientData {
-    username: string | null;
-    permissions: Set<string> | null;
-}
-
-const enum ConnectionCleanUpReason {
-    authenticationTimeout = 'authentication-timeout',
+interface DeviceTimerServiceOperatorsWrapper {
+    operatorsWssServer: WssServer;
+    operatorsWssEmitter: EventEmitter;
+    operatorsStaticFilesServer: StaticFilesServer;
+    operatorsWebSocketPort: number;
+    connectedOperatorsData: Map<number, ConnectedOperatorData>;
+    operatorConnectionsMonitorInterval: number;
+    issuedTokensCount: number;
 }

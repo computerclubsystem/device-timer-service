@@ -1,4 +1,3 @@
-import { URL } from 'node:url';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import pg, { QueryConfig } from 'pg';
@@ -7,9 +6,10 @@ import { StorageProviderConfig } from 'src/storage/storage-provider-config.mjs';
 import { StorageProvider } from 'src/storage/storage-provider.mjs';
 import { StorageProviderInitResult } from 'src/storage/storage-provider-init-result.mjs';
 import { Logger } from '../logger.mjs';
-import { Metadata } from 'src/storage/entties/metadata.mjs';
-import { DeviceStateLog } from 'src/storage/entties/device-state-log.mjs';
-import { IDevice } from 'src/storage/entties/device.mjs';
+import { Metadata } from 'src/storage/entities/metadata.mjs';
+import { DeviceStateLog } from 'src/storage/entities/device-state-log.mjs';
+import { IDevice } from 'src/storage/entities/device.mjs';
+import { IUser } from 'src/storage/entities/user.mjs';
 
 export class PostgreStorageProvider implements StorageProvider {
     private state: PostgreStorageProviderState;
@@ -32,11 +32,30 @@ export class PostgreStorageProvider implements StorageProvider {
         }
         this.state.config = config;
         this.state.pool = this.createConnectionPool();
+        this.state.pool.on('error', (err, client) => this.handlePoolError(err, client));
         const migrateResult = await this.migrateDatabase();
         result.success = migrateResult.success;
         return result;
     }
 
+    async getUser(username: string, passwordHash: string): Promise<IUser | undefined> {
+        const query = `
+        SELECT 
+            id,
+            username,
+            enabled
+        FROM "user"
+        WHERE username = $1 AND password_hash = $2
+        LIMIT 1
+        `;
+        const params: any[] = [
+            username,
+            passwordHash
+        ];
+        const res = await this.execQuery(query, params);
+        return res.rows[0];
+    }
+    
     async saveDevice(device: IDevice): Promise<IDevice | undefined> {
         const query = `
         INSERT INTO device
@@ -247,9 +266,11 @@ export class PostgreStorageProvider implements StorageProvider {
         //     dbName = url.pathname.replaceAll('/', '') || url.searchParams.get('dbname');
         //     this.logger.log(`Using database '${dbName}'`);
         //     if (!dbName) {
-        //         result.success = false;
-        //         this.logger.error(`The connection string dbname is missing or empty`);
-        //         return result;
+        //         // result.success = false;
+        //         const errMessage = `The connection string dbname is missing or empty`;
+        //         this.logger.error(errMessage);
+        //         // return result;
+        //         throw new Error(errMessage);
         //     }
         //     // TODO: Connection string that contains non-existent database
         //     //       cannot be used to create the database
@@ -268,10 +289,11 @@ export class PostgreStorageProvider implements StorageProvider {
         //     }
         // } catch (err) {
         //     this.logger.error(`Cannot create the database`, err);
-        //     result.success = false;
-        //     return result;
+        //     // result.success = false;
+        //     // return result;
+        //     throw err;
         // } finally {
-        //     createDatabaseClient?.release();
+        //     createDatabaseClient?.end();
         // }
     }
 
@@ -287,6 +309,10 @@ export class PostgreStorageProvider implements StorageProvider {
     private async getPoolClient(): Promise<pg.PoolClient> {
         const client = await this.state.pool.connect();
         return client;
+    }
+
+    private handlePoolError(err: Error, client: pg.PoolClient): void {
+        this.logger.error(`Pool error: ${err.message}`);
     }
 }
 
