@@ -412,7 +412,7 @@ export class DeviceTimerService {
         ), this.state.devices.deviceConnectionsMonitorInterval);
     }
 
-    // // TODO: Support generic clean up functions for both deviecs and operators
+    // // TODO: Support generic clean up functions for both devices and operators
     // private cleanUpDeviceConnections(): void {
     //     const connectionIdsWithCleanUpReason = new Map<number, ConnectionCleanUpReason>();
     //     const now = this.getNow();
